@@ -327,7 +327,7 @@ L2="${L2}${SEP}📁 ${C_DIR}${SHORT_DIR}${R}"
 [ -n "$BAT_SEG" ]      && L2="${L2}${SEP}${BAT_SEG}"
 
 R2=""
-[ -n "$WEATHER" ] && R2="${C_WEATHER}${WEATHER}${R}"
+[ -n "$WEATHER" ] && R2="${C_SEP}│${R} ${C_WEATHER}${WEATHER}${R}"
 
 print_lr "$L1" "$R1"
 print_lr "$L2" "$R2"
