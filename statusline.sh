@@ -4,8 +4,17 @@ export LANG=C
 
 INPUT=$(cat)
 
-# ─── Konfiguracja (dostosuj do swojego planu) ───────────────────
-BLOCK_LIMIT_5H=15000000   # Max 5 ≈ 15M tokenów / 5h (zmień jak poznasz dokładny limit)
+# ─── Debug: zapisz ostatni JSON stdin do podglądu ───────────────
+# Odkomentuj gdy chcesz zobaczyć co Claude Code przekazuje:
+# printf "%s" "$INPUT" > /tmp/.cc_statusline_stdin.json
+
+# ─── Konfiguracja ───────────────────────────────────────────────
+# UWAGA: Od Claude Code 2.x limity 5h/7d są po stronie serwera.
+# Skrypt pobiera je z oficjalnego endpointu OAuth (jak Claude Code).
+# Fallback na ccusage gdy endpoint nieosiągalny.
+CC_USAGE_ENDPOINT="https://api.anthropic.com/api/oauth/usage"
+CC_KEYCHAIN_SERVICE="Claude Code-credentials"
+CC_USER_AGENT="claude-code/2.0.32"
 
 # ─── Kolory ──────────────────────────────────────────────────────
 R="\033[0m"
@@ -63,105 +72,103 @@ print_lr() {
   printf "%b%*s%b\n" "$left" "$pad" "" "$right"
 }
 
-# ─── Dane z JSON ─────────────────────────────────────────────────
+# ─── Dane z JSON (kontekst sesji) ────────────────────────────────
 MODEL=$(echo "$INPUT"       | jq -r '.model.display_name // "unknown"' 2>/dev/null)
-INPUT_TOK=$(echo "$INPUT"   | jq -r '.context_window.total_input_tokens // 0' 2>/dev/null)
-OUTPUT_TOK=$(echo "$INPUT"  | jq -r '.context_window.total_output_tokens // 0' 2>/dev/null)
-CTX_SIZE=$(echo "$INPUT"    | jq -r '.context_window.context_window_size // 200000' 2>/dev/null)
 
-INPUT_TOK=${INPUT_TOK:-0}; OUTPUT_TOK=${OUTPUT_TOK:-0}; CTX_SIZE=${CTX_SIZE:-200000}
-TOTAL_TOK=$(( INPUT_TOK + OUTPUT_TOK ))
-CTX_PCT=0
-[ "$CTX_SIZE" -gt 0 ] && CTX_PCT=$(( TOTAL_TOK * 100 / CTX_SIZE ))
+# Procent pozostały kontekstu — nowe Claude Code wystawia gotowe pole.
+# Fallback: licz z input+output / window_size (stary format).
+CTX_REMAIN=$(echo "$INPUT" | jq -r '.context_window.remaining_percentage // empty' 2>/dev/null)
+if [ -n "$CTX_REMAIN" ] && [ "$CTX_REMAIN" != "null" ]; then
+  CTX_PCT=$(awk -v r="$CTX_REMAIN" 'BEGIN{printf "%d", 100 - r}')
+else
+  INPUT_TOK=$(echo "$INPUT"   | jq -r '.context_window.total_input_tokens // 0' 2>/dev/null)
+  OUTPUT_TOK=$(echo "$INPUT"  | jq -r '.context_window.total_output_tokens // 0' 2>/dev/null)
+  CTX_SIZE=$(echo "$INPUT"    | jq -r '.context_window.context_window_size // 200000' 2>/dev/null)
+  INPUT_TOK=${INPUT_TOK:-0}; OUTPUT_TOK=${OUTPUT_TOK:-0}; CTX_SIZE=${CTX_SIZE:-200000}
+  TOTAL_TOK=$(( INPUT_TOK + OUTPUT_TOK ))
+  CTX_PCT=0
+  [ "$CTX_SIZE" -gt 0 ] && CTX_PCT=$(( TOTAL_TOK * 100 / CTX_SIZE ))
+fi
+[ "$CTX_PCT" -lt 0 ] && CTX_PCT=0
+[ "$CTX_PCT" -gt 100 ] && CTX_PCT=100
 
-# ─── ccusage: 5H block (cache 5min) ─────────────────────────────
-get_ccusage() {
-  local cache="/tmp/.cc_usage_cache" now
+# ─── Limity planu Pro/Max z OAuth endpoint (cache 5min) ─────────
+# Endpoint zwraca 5h i 7d utilization (jak w /status).
+# Token OAuth siedzi w Keychain jako "Claude Code-credentials".
+get_usage_limits() {
+  local cache="/tmp/.cc_usage_limits" now
   now=$(date +%s)
   if [ -f "$cache" ]; then
     local age=$(( now - $(stat -f %m "$cache" 2>/dev/null || echo 0) ))
     [ "$age" -lt 300 ] && cat "$cache" && return
   fi
-  if ! command -v ccusage &>/dev/null; then
-    printf "0|0|0||" | tee "$cache"; return
+
+  # Pobierz token z Keychain
+  local creds token
+  creds=$(security find-generic-password -s "$CC_KEYCHAIN_SERVICE" -w 2>/dev/null)
+  if [ -z "$creds" ]; then
+    printf "|||||" | tee "$cache"; return
   fi
-  local raw
-  raw=$(ccusage blocks --json 2>/dev/null)
-  [ -z "$raw" ] && printf "0|0|0||" | tee "$cache" && return
+  token=$(echo "$creds" | jq -r '.claudeAiOauth.accessToken // empty' 2>/dev/null)
+  [ -z "$token" ] && { printf "|||||" | tee "$cache"; return; }
 
-  local cur_block cur_tokens cur_start cur_end
-  local cur_tokens_fmt remaining_fmt cur_pct cur_reset_str="" est_end_str=""
-  cur_block=$(echo "$raw" | jq '
-    ([.blocks[] | select(.isActive == true)] | last) //
-    ([.blocks[] | select(.isGap == false)]   | last) // null' 2>/dev/null)
-  cur_tokens=$(echo "$cur_block" | jq -r '.totalTokens // 0' 2>/dev/null)
-  cur_tokens=${cur_tokens:-0}
-  cur_start=$(echo "$cur_block" | jq -r '.startTime // empty' 2>/dev/null)
-  cur_end=$(echo "$cur_block" | jq -r '.endTime // empty' 2>/dev/null)
+  # Zapytaj endpoint (max 3s)
+  local resp
+  resp=$(curl -sf --max-time 3 "$CC_USAGE_ENDPOINT" \
+    -H "Authorization: Bearer $token" \
+    -H "anthropic-beta: oauth-2025-04-20" \
+    -H "User-Agent: $CC_USER_AGENT" 2>/dev/null)
+  [ -z "$resp" ] && { printf "|||||" | tee "$cache"; return; }
 
-  # Format tokenów (k/M)
-  fmt_t() {
-    local t=$1
-    if [ "$t" -ge 1000000 ]; then
-      awk -v t="$t" 'BEGIN{printf "%.1fM", t/1000000}'
-    elif [ "$t" -ge 1000 ]; then
-      awk -v t="$t" 'BEGIN{printf "%.0fk", t/1000}'
+  local five_util five_reset seven_util seven_reset opus_util opus_reset
+  five_util=$(echo "$resp"  | jq -r '.five_hour.utilization // 0' 2>/dev/null)
+  five_reset=$(echo "$resp" | jq -r '.five_hour.resets_at // empty' 2>/dev/null)
+  seven_util=$(echo "$resp" | jq -r '.seven_day.utilization // 0' 2>/dev/null)
+  seven_reset=$(echo "$resp"| jq -r '.seven_day.resets_at // empty' 2>/dev/null)
+  opus_util=$(echo "$resp"  | jq -r '.seven_day_opus.utilization // 0' 2>/dev/null)
+  opus_reset=$(echo "$resp" | jq -r '.seven_day_opus.resets_at // empty' 2>/dev/null)
+
+  # Zamień ISO timestamps na "XhYm do resetu"
+  to_remaining() {
+    local iso="$1" epoch diff h m
+    [ -z "$iso" ] || [ "$iso" = "null" ] && return
+    epoch=$(date -jf "%Y-%m-%dT%H:%M:%S" "${iso%.*}" "+%s" 2>/dev/null || \
+            date -jf "%Y-%m-%dT%H:%M:%SZ" "${iso%.*}Z" "+%s" 2>/dev/null || echo 0)
+    diff=$(( epoch - $(date +%s) ))
+    [ "$diff" -le 0 ] && return
+    h=$(( diff / 3600 )); m=$(( (diff % 3600) / 60 ))
+    if [ "$h" -ge 24 ]; then
+      printf "%dd%dh" $(( h / 24 )) $(( h % 24 ))
+    elif [ "$h" -gt 0 ]; then
+      printf "%dh%dm" "$h" "$m"
     else
-      printf "%d" "$t"
+      printf "%dm" "$m"
     fi
   }
-  cur_tokens_fmt=$(fmt_t "$cur_tokens")
+  local five_left seven_left opus_left
+  five_left=$(to_remaining "$five_reset")
+  seven_left=$(to_remaining "$seven_reset")
+  opus_left=$(to_remaining "$opus_reset")
 
-  # Pozostałe tokeny
-  local remaining=$(( BLOCK_LIMIT_5H - cur_tokens ))
-  [ "$remaining" -lt 0 ] && remaining=0
-  remaining_fmt=$(fmt_t "$remaining")
+  # Zaokrąglij procenty do int
+  five_util=$(awk -v v="$five_util"  'BEGIN{printf "%d", v+0.5}')
+  seven_util=$(awk -v v="$seven_util" 'BEGIN{printf "%d", v+0.5}')
+  opus_util=$(awk -v v="$opus_util"  'BEGIN{printf "%d", v+0.5}')
 
-  # Procent zużycia
-  cur_pct=0
-  [ "$BLOCK_LIMIT_5H" -gt 0 ] && cur_pct=$(( cur_tokens * 100 / BLOCK_LIMIT_5H ))
-  [ "$cur_pct" -gt 100 ] && cur_pct=100
-
-  # Czas do resetu
-  if [ -n "$cur_end" ] && [ "$cur_end" != "null" ]; then
-    local end_epoch diff h m
-    end_epoch=$(date -jf "%Y-%m-%dT%H:%M:%S" "${cur_end%.*}" "+%s" 2>/dev/null || \
-                date -d "${cur_end%.*}" "+%s" 2>/dev/null || echo 0)
-    diff=$(( end_epoch - now ))
-    if [ "$diff" -gt 0 ]; then
-      h=$(( diff / 3600 )); m=$(( (diff % 3600) / 60 ))
-      [ "$h" -gt 0 ] && cur_reset_str="${h}h${m}m" || cur_reset_str="${m}m"
-    else
-      cur_reset_str="wygasł"
-    fi
-  fi
-
-  # Szacowany czas wyczerpania (na podstawie tempa)
-  if [ -n "$cur_start" ] && [ "$cur_start" != "null" ] && [ "$cur_tokens" -gt 0 ] && [ "$remaining" -gt 0 ]; then
-    local start_epoch elapsed
-    start_epoch=$(date -jf "%Y-%m-%dT%H:%M:%S" "${cur_start%.*}" "+%s" 2>/dev/null || \
-                  date -d "${cur_start%.*}" "+%s" 2>/dev/null || echo 0)
-    elapsed=$(( now - start_epoch ))
-    if [ "$elapsed" -gt 60 ]; then
-      local sec_left end_at h m
-      sec_left=$(awk -v rem="$remaining" -v tok="$cur_tokens" -v dur="$elapsed" \
-        'BEGIN{printf "%d", (rem/tok)*dur}')
-      if [ "$sec_left" -gt 0 ]; then
-        local est_h=$(( sec_left / 3600 )) est_m=$(( (sec_left % 3600) / 60 ))
-        [ "$est_h" -gt 0 ] && est_end_str="${est_h}h${est_m}m" || est_end_str="${est_m}m"
-      fi
-    fi
-  fi
-
-  printf "%s|%s|%s|%s|%s" "${cur_tokens_fmt:-0}" "${remaining_fmt:-0}" "${cur_pct:-0}" "${cur_reset_str:-}" "${est_end_str:-}" | tee "$cache"
+  printf "%s|%s|%s|%s|%s|%s" \
+    "${five_util:-0}" "${five_left:-}" \
+    "${seven_util:-0}" "${seven_left:-}" \
+    "${opus_util:-0}" "${opus_left:-}" | tee "$cache"
 }
 
-CCDATA=$(get_ccusage)
-CUR_TOKENS=$(echo "$CCDATA"   | cut -d'|' -f1)
-CUR_LEFT=$(echo "$CCDATA"     | cut -d'|' -f2)
-CUR_PCT=$(echo "$CCDATA"      | cut -d'|' -f3)
-RESET_TIMER=$(echo "$CCDATA"  | cut -d'|' -f4)
-EST_END=$(echo "$CCDATA"      | cut -d'|' -f5)
+LIMITS=$(get_usage_limits)
+FIVE_PCT=$(echo  "$LIMITS" | cut -d'|' -f1)
+FIVE_LEFT=$(echo "$LIMITS" | cut -d'|' -f2)
+SEVEN_PCT=$(echo "$LIMITS" | cut -d'|' -f3)
+SEVEN_LEFT=$(echo "$LIMITS"| cut -d'|' -f4)
+OPUS_PCT=$(echo  "$LIMITS" | cut -d'|' -f5)
+OPUS_LEFT=$(echo "$LIMITS" | cut -d'|' -f6)
+FIVE_PCT=${FIVE_PCT:-0}; SEVEN_PCT=${SEVEN_PCT:-0}; OPUS_PCT=${OPUS_PCT:-0}
 
 # ─── CPU (cache 60s, top jest wolny) ────────────────────────────
 get_cpu() {
@@ -286,16 +293,28 @@ SHORT_DIR=$(pwd | sed "s|$HOME|~|" | awk -F'/' '{
   }
 }')
 
-# ═══ LINIA 1: AI — kontekst + limit 5H ══════════════════════════
+# ═══ LINIA 1: AI — kontekst + limity 5h / 7d / Opus ═════════════
 CTX_C=$(pct_color "$CTX_PCT")
 CTX_BAR=$(dotbar "$CTX_PCT")
 L1="${C_MODEL}${MODEL}${R}"
 L1="${L1}${SEP}🧩 ${C_LBL}CTX:${R} ${CTX_BAR} ${CTX_C}${CTX_PCT}%${R}"
-TOK_C=$(pct_color "${CUR_PCT:-0}")
-TOK_BAR=$(dotbar "${CUR_PCT:-0}")
-L1="${L1}${SEP}💎 ${C_LBL}TOKENY:${R} ${TOK_BAR} ${C_VAL}${CUR_TOKENS:-0}${R}${C_DIM}/${R}${C_VAL}${CUR_LEFT:-0}${R} ${TOK_C}${CUR_PCT:-0}%${R}"
-[ -n "$EST_END" ] && L1="${L1}${SEP}${C_LBL}koniec ~${R}${C_VAL}${EST_END}${R}"
-[ -n "$RESET_TIMER" ] && L1="${L1}${SEP}${C_LBL}reset${R} ${C_VAL}${RESET_TIMER}${R}"
+
+# 5h block (aktualne okno rozliczeniowe)
+FIVE_C=$(pct_color "$FIVE_PCT")
+FIVE_BAR=$(dotbar "$FIVE_PCT")
+L1="${L1}${SEP}💎 ${FIVE_BAR} ${FIVE_C}${FIVE_PCT}%${R}"
+[ -n "$FIVE_LEFT" ] && L1="${L1} ${C_DIM}(${C_VAL}${FIVE_LEFT}${C_DIM})${R}"
+
+# 7d total
+SEVEN_C=$(pct_color "$SEVEN_PCT")
+L1="${L1}${SEP}📆 ${C_LBL}7d:${R} ${SEVEN_C}${SEVEN_PCT}%${R}"
+[ -n "$SEVEN_LEFT" ] && L1="${L1} ${C_DIM}(${C_VAL}${SEVEN_LEFT}${C_DIM})${R}"
+
+# 7d Opus (osobny licznik na Max plan)
+if [ "$OPUS_PCT" -gt 0 ] || [ -n "$OPUS_LEFT" ]; then
+  OPUS_C=$(pct_color "$OPUS_PCT")
+  L1="${L1}${SEP}🧠 ${C_LBL}Opus:${R} ${OPUS_C}${OPUS_PCT}%${R}"
+fi
 
 R1=""
 
