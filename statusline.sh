@@ -130,10 +130,12 @@ get_usage_limits() {
 
   # Zamień ISO timestamps na "XhYm do resetu"
   to_remaining() {
-    local iso="$1" epoch diff h m
+    local iso="$1" clean epoch diff h m
     [ -z "$iso" ] || [ "$iso" = "null" ] && return
-    epoch=$(date -jf "%Y-%m-%dT%H:%M:%S" "${iso%.*}" "+%s" 2>/dev/null || \
-            date -jf "%Y-%m-%dT%H:%M:%SZ" "${iso%.*}Z" "+%s" 2>/dev/null || echo 0)
+    clean="${iso%%.*}"
+    clean="${clean%%+*}"
+    clean="${clean%Z}"
+    epoch=$(TZ=UTC date -jf "%Y-%m-%dT%H:%M:%S" "$clean" "+%s" 2>/dev/null || echo 0)
     diff=$(( epoch - $(date +%s) ))
     [ "$diff" -le 0 ] && return
     h=$(( diff / 3600 )); m=$(( (diff % 3600) / 60 ))
@@ -314,6 +316,7 @@ L1="${L1}${SEP}📆 ${C_LBL}7d:${R} ${SEVEN_C}${SEVEN_PCT}%${R}"
 if [ "$OPUS_PCT" -gt 0 ] || [ -n "$OPUS_LEFT" ]; then
   OPUS_C=$(pct_color "$OPUS_PCT")
   L1="${L1}${SEP}🧠 ${C_LBL}Opus:${R} ${OPUS_C}${OPUS_PCT}%${R}"
+  [ -n "$OPUS_LEFT" ] && L1="${L1} ${C_DIM}(${C_VAL}${OPUS_LEFT}${C_DIM})${R}"
 fi
 
 R1=""
