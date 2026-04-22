@@ -157,10 +157,18 @@ get_usage_limits() {
   seven_util=$(awk -v v="$seven_util" 'BEGIN{printf "%d", v+0.5}')
   opus_util=$(awk -v v="$opus_util"  'BEGIN{printf "%d", v+0.5}')
 
-  printf "%s|%s|%s|%s|%s|%s" \
+  # Epoch dla resetu 5h (do burn rate predictora)
+  local five_reset_epoch=""
+  if [ -n "$five_reset" ] && [ "$five_reset" != "null" ]; then
+    local c="${five_reset%%.*}"; c="${c%%+*}"; c="${c%Z}"
+    five_reset_epoch=$(TZ=UTC date -jf "%Y-%m-%dT%H:%M:%S" "$c" "+%s" 2>/dev/null || echo "")
+  fi
+
+  printf "%s|%s|%s|%s|%s|%s|%s" \
     "${five_util:-0}" "${five_left:-}" \
     "${seven_util:-0}" "${seven_left:-}" \
-    "${opus_util:-0}" "${opus_left:-}" | tee "$cache"
+    "${opus_util:-0}" "${opus_left:-}" \
+    "${five_reset_epoch:-}" | tee "$cache"
 }
 
 LIMITS=$(get_usage_limits)
@@ -170,7 +178,36 @@ SEVEN_PCT=$(echo "$LIMITS" | cut -d'|' -f3)
 SEVEN_LEFT=$(echo "$LIMITS"| cut -d'|' -f4)
 OPUS_PCT=$(echo  "$LIMITS" | cut -d'|' -f5)
 OPUS_LEFT=$(echo "$LIMITS" | cut -d'|' -f6)
+FIVE_RESET_EPOCH=$(echo "$LIMITS" | cut -d'|' -f7)
 FIVE_PCT=${FIVE_PCT:-0}; SEVEN_PCT=${SEVEN_PCT:-0}; OPUS_PCT=${OPUS_PCT:-0}
+
+# ─── Burn rate predictor (5h) ───────────────────────────────────
+# Liczy tempo zużycia tokenów. Koloruje czas w nawiasie (FIVE_LEFT):
+# szary=luz (zmieścisz się), żółty=ciasno (<30m bufora), czerwony=zabraknie przed resetem.
+FIVE_LEFT_COL="${C_VAL}"                 # domyślnie jasny (brak predykcji)
+if [ -n "$FIVE_RESET_EPOCH" ] && [ "$FIVE_PCT" -gt 0 ]; then
+  WIN_SEC=18000                          # 5h w sekundach
+  START_EPOCH=$((FIVE_RESET_EPOCH - WIN_SEC))
+  NOW_EPOCH=$(date +%s)
+  ELAPSED=$((NOW_EPOCH - START_EPOCH))
+  if [ "$ELAPSED" -ge 360 ]; then        # min 6 min okna — wcześniej za mała próbka
+    TOK_LEFT=$((100 - FIVE_PCT))
+    if [ "$TOK_LEFT" -gt 0 ]; then
+      SEC_DEPLETE=$(( TOK_LEFT * ELAPSED / FIVE_PCT ))
+      DEPLETE_EPOCH=$((NOW_EPOCH + SEC_DEPLETE))
+      BUFFER=$((DEPLETE_EPOCH - FIVE_RESET_EPOCH))
+      if [ "$BUFFER" -lt 0 ]; then
+        FIVE_LEFT_COL="\033[38;5;203m"   # czerwony — zabraknie przed resetem
+      elif [ "$BUFFER" -lt 1800 ]; then
+        FIVE_LEFT_COL="\033[38;5;221m"   # żółty — bufor <30min
+      else
+        FIVE_LEFT_COL="${C_VAL}"          # jasny szary (252) — luz
+      fi
+    else
+      FIVE_LEFT_COL="\033[38;5;203m"     # 100% zużyte → czerwony
+    fi
+  fi
+fi
 
 # ─── CPU (cache 60s, top jest wolny) ────────────────────────────
 get_cpu() {
@@ -305,7 +342,7 @@ L1="${L1}${SEP}🧩 ${C_LBL}CTX:${R} ${CTX_BAR} ${CTX_C}${CTX_PCT}%${R}"
 FIVE_C=$(pct_color "$FIVE_PCT")
 FIVE_BAR=$(dotbar "$FIVE_PCT")
 L1="${L1}${SEP}💎 ${FIVE_BAR} ${FIVE_C}${FIVE_PCT}%${R}"
-[ -n "$FIVE_LEFT" ] && L1="${L1} ${C_DIM}(${C_VAL}${FIVE_LEFT}${C_DIM})${R}"
+[ -n "$FIVE_LEFT" ] && L1="${L1} ${C_DIM}(${FIVE_LEFT_COL}${FIVE_LEFT}${C_DIM})${R}"
 
 # 7d total
 SEVEN_C=$(pct_color "$SEVEN_PCT")
