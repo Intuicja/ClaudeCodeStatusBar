@@ -75,10 +75,13 @@ Dodaj do `~/.claude/settings.json`:
 {
   "statusLine": {
     "type": "command",
-    "command": "/Users/TWOJA_NAZWA/.claude/statusline.sh"
+    "command": "/Users/TWOJA_NAZWA/.claude/statusline.sh",
+    "refreshInterval": 300
   }
 }
 ```
+
+`refreshInterval` (sekundy, wymaga Claude Code ≥ 2.1.128) wymusza cykliczne odświeżanie status bara — bez tego pasek aktualizuje się tylko przy zdarzeniach (submit promptu, odpowiedź modelu), więc po dłuższym idle dane potrafią być nieaktualne. 300s = co 5 min, idealnie pokrywa się z cache limitów OAuth.
 
 Aby uniknąć promptów permission przy każdym odświeżeniu, dopisz w `permissions.allow`:
 
@@ -88,6 +91,39 @@ Aby uniknąć promptów permission przy każdym odświeżeniu, dopisz w `permiss
 ```
 
 Restart Claude Code — pasek pojawi się na dole terminala.
+
+## Auto-update przy starcie sesji (opcjonalnie)
+
+Skrypt `check-statusline-update.sh` to hook `SessionStart` dla Claude Code, który przy każdym uruchomieniu sesji sprawdza czy lokalny `statusline.sh` ma ten sam SHA blob co wersja na branchu `main`. Jeśli nie — robi backup i podmienia plik na świeższy. Cichy gdy aktualny.
+
+Instalacja:
+
+```bash
+cp check-statusline-update.sh ~/.claude/check-statusline-update.sh
+chmod +x ~/.claude/check-statusline-update.sh
+```
+
+Dodaj do `~/.claude/settings.json` (sekcja `hooks`):
+
+```json
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/Users/TWOJA_NAZWA/.claude/check-statusline-update.sh"
+          }
+        ]
+      }
+    ]
+  }
+}
+```
+
+Logi akcji hooka idą do `~/.claude/statusline-update.log`. Wymagane: `git`, `curl`, `jq` (już potrzebne dla statusline.sh). Network timeout: 3-5s — nie blokuje startu sesji nawet offline.
 
 ## Konfiguracja
 
