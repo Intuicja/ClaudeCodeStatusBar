@@ -1,109 +1,114 @@
 # Claude Code Status Bar
 
-Rozbudowany dwuliniowy pasek stanu dla [Claude Code](https://docs.anthropic.com/en/docs/claude-code) (CLI). Wyświetla model, zużycie kontekstu, realne limity planu Pro/Max (5h / 7d / 7d Opus), dane systemowe i pogodę.
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+![Shell](https://img.shields.io/badge/shell-bash-4EAA25?logo=gnubash&logoColor=white)
+![Platform](https://img.shields.io/badge/platform-macOS-000000?logo=apple&logoColor=white)
 
-## Podgląd
+A two-line status bar for [Claude Code](https://docs.anthropic.com/en/docs/claude-code) (the Anthropic CLI) that shows what the built-in statusline doesn't: your **real Pro/Max plan usage** (5h / 7d / 7d Opus, pulled straight from Anthropic's own OAuth endpoint), a live **context window** gauge, and at-a-glance **system stats** (CPU, RAM, disk, battery) — all in a compact, color-coded, single-file bash script with zero dependencies beyond `jq` and `curl`.
+
+If you've ever wondered *"how close am I to my 5-hour limit right now"* without running `/status` by hand, this is for you.
+
+## Preview
 
 ```
 Opus 4.7 │ 🧩 CTX: ▮▮▯▯▯▯▯▯▯▯ 18% │ 💎 ▮▯▯▯▯▯▯▯▯▯ 7% (55m) │ 📆 7d: 12% (4d12h)
-🕐 07:04 │ 📁 ~/D/P/Projekt │ 💾 142GB │ 🧠 8.2GB │ ⚙ 23% │ ⚡ 87%                 ☀ 18°C
+🕐 07:04 │ 📁 ~/D/P/project │ 💾 142GB │ 🧠 8.2GB │ ⚙ 23% │ ⚡ 87%
 ```
 
-## Co wyświetla
+## What it shows
 
-### Linia 1 — AI i limity planu
-| Element | Opis |
+### Line 1 — AI usage
+| Segment | Description |
 |---------|------|
-| **Model** | Nazwa aktywnego modelu (np. `Opus 4.7`, `Sonnet 4.6`) |
-| **🧩 CTX** | Zużycie okna kontekstowego sesji (z paskiem i %) |
-| **💎** | Zużycie limitu w bieżącym oknie **5h** + czas do resetu |
-| **📆 7d** | Zużycie tygodniowego limitu planu + czas do resetu |
-| **🧠 Opus** | Osobny 7-dniowy licznik Opusa (Max plan; ukryty przy 0%) |
+| **Model** | Active model name (e.g. `Opus 4.7`, `Sonnet 4.6`) |
+| **🧩 CTX** | Current session's context window usage (bar + %) |
+| **💎** | Usage in the current **5-hour** rolling window + time until reset |
+| **📆 7d** | Weekly plan usage + time until reset |
+| **🧠 Opus** | Separate 7-day Opus counter (Max plan; hidden at 0%) |
 
-### Linia 2 — Środowisko
-| Element | Opis |
+### Line 2 — System
+| Segment | Description |
 |---------|------|
-| **🕐 Zegar** | Aktualna godzina |
-| **📁 Katalog** | Skrócona ścieżka robocza |
-| **💾 Dysk** | Wolne miejsce |
-| **🧠 RAM** | Wolna pamięć |
-| **⚙ CPU** | Obciążenie procesora |
-| **🔋/⚡ Bateria** | Poziom + tryb (bateria/AC) |
-| **Pogoda** | Temperatura i ikona (prawa strona) |
+| **🕐 Clock** | Current time |
+| **📁 Directory** | Shortened working directory path |
+| **💾 Disk** | Free disk space |
+| **🧠 RAM** | Free memory |
+| **⚙ CPU** | CPU load |
+| **🔋/⚡ Battery** | Charge level + power source (battery/AC) |
 
-## Kolorowanie
+## Color coding
 
-Wartości procentowe zmieniają kolor wg poziomu:
-- **Zielony** — poniżej 50%
-- **Żółty** — 50-74%
-- **Pomarańczowy** — 75-89%
-- **Czerwony** — 90%+
+Percentage values are colored by severity:
+- **Green** — below 50%
+- **Yellow** — 50-74%
+- **Orange** — 75-89%
+- **Red** — 90%+
 
-## Skąd dane o limitach?
+## Where the usage data comes from
 
-Claude Code 2.x trzyma limity planu **po stronie serwera Anthropic**. Stare skrypty używające `ccusage blocks` pokazywały `100% z 0` bo lokalne pliki JSONL nie mają pełnego obrazu.
+Since Claude Code 2.x, 5h/7d plan limits are tracked **server-side** by Anthropic. Older scripts based on `ccusage blocks` show `100% of 0` because the local JSONL logs no longer carry the full picture.
 
-Ten skrypt używa tego samego endpointa co Claude Code dla `/status`:
+This script queries the same endpoint Claude Code itself uses for `/status`:
 
 ```
 GET https://api.anthropic.com/api/oauth/usage
-Authorization: Bearer <accessToken z Keychain>
+Authorization: Bearer <accessToken from Keychain>
 anthropic-beta: oauth-2025-04-20
 ```
 
-Token OAuth odczytywany jest z macOS Keychain (`security find-generic-password -s "Claude Code-credentials"`). Wyniki są cache'owane 5 min.
+The OAuth token is read straight from the macOS Keychain (`security find-generic-password -s "Claude Code-credentials"`). Results are cached for 5 minutes.
 
-Jeśli Keychain lub endpoint są niedostępne, sekcje 5h/7d chowają się automatycznie — reszta paska działa normalnie.
+If the Keychain or the endpoint is unreachable, the 5h/7d sections hide themselves automatically — the rest of the bar keeps working.
 
-## Wymagania
+## Requirements
 
-- **macOS** (używa `top`, `vm_stat`, `pmset`, `df`, `security`)
-- **jq** — parsowanie JSON
-- **curl** — wywołanie OAuth endpointa + pogoda
-- Zalogowany Claude Code z planem Pro/Max (dla sekcji 5h/7d)
+- **macOS** (uses `top`, `vm_stat`, `pmset`, `df`, `security`)
+- **[jq](https://jqlang.org/)** — JSON parsing
+- **curl** — OAuth endpoint calls
+- A Claude Code session signed in to a Pro/Max plan (for the 5h/7d sections)
 
-## Instalacja
+## Installation
 
 ```bash
 cp statusline.sh ~/.claude/statusline.sh
 chmod +x ~/.claude/statusline.sh
 ```
 
-Dodaj do `~/.claude/settings.json`:
+Add to `~/.claude/settings.json`:
 
 ```json
 {
   "statusLine": {
     "type": "command",
-    "command": "/Users/TWOJA_NAZWA/.claude/statusline.sh",
+    "command": "/Users/YOUR_USERNAME/.claude/statusline.sh",
     "refreshInterval": 300
   }
 }
 ```
 
-`refreshInterval` (sekundy, wymaga Claude Code ≥ 2.1.128) wymusza cykliczne odświeżanie status bara — bez tego pasek aktualizuje się tylko przy zdarzeniach (submit promptu, odpowiedź modelu), więc po dłuższym idle dane potrafią być nieaktualne. 300s = co 5 min, idealnie pokrywa się z cache limitów OAuth.
+`refreshInterval` (seconds, requires Claude Code ≥ 2.1.128) forces the status bar to refresh on a timer — without it, the bar only updates on events (prompt submit, model response), so data can go stale after a while idle. 300s = every 5 minutes, matching the OAuth usage cache.
 
-Aby uniknąć promptów permission przy każdym odświeżeniu, dopisz w `permissions.allow`:
+To avoid a permission prompt on every refresh, add these to `permissions.allow`:
 
 ```json
 "Bash(security find-generic-password:*)",
 "Bash(curl * api.anthropic.com/api/oauth/usage*)"
 ```
 
-Restart Claude Code — pasek pojawi się na dole terminala.
+Restart Claude Code — the bar appears at the bottom of the terminal.
 
-## Auto-update przy starcie sesji (opcjonalnie)
+## Auto-update on session start (optional)
 
-Skrypt `check-statusline-update.sh` to hook `SessionStart` dla Claude Code, który przy każdym uruchomieniu sesji sprawdza czy lokalny `statusline.sh` ma ten sam SHA blob co wersja na branchu `main`. Jeśli nie — robi backup i podmienia plik na świeższy. Cichy gdy aktualny.
+`check-statusline-update.sh` is a Claude Code `SessionStart` hook that checks, on every new session, whether your local `statusline.sh` has the same blob SHA as the `main` branch here. If not, it backs up the current file and swaps in the newer one. Silent when already up to date.
 
-Instalacja:
+Install:
 
 ```bash
 cp check-statusline-update.sh ~/.claude/check-statusline-update.sh
 chmod +x ~/.claude/check-statusline-update.sh
 ```
 
-Dodaj do `~/.claude/settings.json` (sekcja `hooks`):
+Add to `~/.claude/settings.json` (`hooks` section):
 
 ```json
 {
@@ -114,7 +119,7 @@ Dodaj do `~/.claude/settings.json` (sekcja `hooks`):
         "hooks": [
           {
             "type": "command",
-            "command": "/Users/TWOJA_NAZWA/.claude/check-statusline-update.sh"
+            "command": "/Users/YOUR_USERNAME/.claude/check-statusline-update.sh"
           }
         ]
       }
@@ -123,11 +128,11 @@ Dodaj do `~/.claude/settings.json` (sekcja `hooks`):
 }
 ```
 
-Logi akcji hooka idą do `~/.claude/statusline-update.log`. Wymagane: `git`, `curl`, `jq` (już potrzebne dla statusline.sh). Network timeout: 3-5s — nie blokuje startu sesji nawet offline.
+Logs go to `~/.claude/statusline-update.log`. Requires: `git`, `curl`, `jq` (already needed by `statusline.sh`). Network timeout: 3-5s — never blocks session startup, even offline.
 
-## Konfiguracja
+## Configuration
 
-Na górze skryptu:
+At the top of the script:
 
 ```bash
 CC_USAGE_ENDPOINT="https://api.anthropic.com/api/oauth/usage"
@@ -137,29 +142,31 @@ CC_USER_AGENT="claude-code/2.0.32"
 
 ## Cache
 
-| Dane | Cache | Plik |
-|------|-------|------|
-| Limity planu (OAuth) | 5 min | `/tmp/.cc_usage_limits` |
+| Data | TTL | File |
+|------|-----|------|
+| Plan usage (OAuth) | 5 min | `/tmp/.cc_usage_limits` |
 | CPU | 60s | `/tmp/.cc_cpu_cache` |
 | RAM | 60s | `/tmp/.cc_ram_cache` |
-| Dysk | 10 min | `/tmp/.cc_disk_cache` |
-| Bateria | 60s | `/tmp/.cc_bat_cache` |
-| Pogoda | 10 min | `/tmp/.cc_weather` |
+| Disk | 10 min | `/tmp/.cc_disk_cache` |
+| Battery | 60s | `/tmp/.cc_bat_cache` |
 
-## Jak działa
+## How it works
 
-1. Claude Code wywołuje skrypt co kilka sekund, przekazując JSON sesji na stdin.
-2. Skrypt odczytuje z JSON: model, `context_window.remaining_percentage` (z fallbackiem na stary format).
-3. Pobiera token OAuth z Keychain i pyta endpoint `api/oauth/usage` o realne limity 5h/7d/Opus.
-4. Zbiera dane systemowe (CPU, RAM, dysk, bateria) z narzędzi macOS.
-5. Pobiera pogodę z Open-Meteo API na podstawie lokalizacji IP.
-6. Formatuje wszystko w dwie kolorowe linie z paskami graficznymi i wyrównaniem lewo/prawo.
+1. Claude Code invokes the script every few seconds, passing the session JSON on stdin.
+2. The script reads the model name and `context_window.remaining_percentage` (falling back to the legacy token-count format when needed).
+3. It fetches the OAuth token from Keychain and queries the `api/oauth/usage` endpoint for real 5h/7d/Opus usage.
+4. It collects system stats (CPU, RAM, disk, battery) via native macOS tools.
+5. It renders everything as two color-coded lines with bar graphs and left/right alignment.
 
-## Inspiracja / źródła
+## Contributing
+
+Issues and pull requests are welcome — new segments, other platforms, alternate bar styles, whatever makes this more useful for your setup.
+
+## Credits / sources
 
 - [codelynx.dev — Claude Code Usage Limits Statusline](https://codelynx.dev/posts/claude-code-usage-limits-statusline)
-- Issues: [#15366](https://github.com/anthropics/claude-code/issues/15366), [#12520](https://github.com/anthropics/claude-code/issues/12520), [#15931](https://github.com/anthropics/claude-code/issues/15931)
+- Related issues: [#15366](https://github.com/anthropics/claude-code/issues/15366), [#12520](https://github.com/anthropics/claude-code/issues/12520), [#15931](https://github.com/anthropics/claude-code/issues/15931)
 
-## Licencja
+## License
 
-MIT
+MIT — see [LICENSE](LICENSE). Free to use, modify, and redistribute. If you fork or reuse this script, keeping a credit line back to the original author (**Intuicja**) is appreciated.

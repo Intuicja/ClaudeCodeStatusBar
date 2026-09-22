@@ -1,22 +1,26 @@
 #!/usr/bin/env bash
+# Claude Code Status Bar
+# https://github.com/Intuicja/ClaudeCodeStatusBar
+# Copyright (c) Intuicja — MIT License (see LICENSE)
+
 export LC_ALL=C
 export LANG=C
 
 INPUT=$(cat)
 
-# ─── Debug: zapisz ostatni JSON stdin do podglądu ───────────────
-# Odkomentuj gdy chcesz zobaczyć co Claude Code przekazuje:
+# ─── Debug: dump the last stdin JSON for inspection ─────────────
+# Uncomment when you want to see what Claude Code passes in:
 # printf "%s" "$INPUT" > /tmp/.cc_statusline_stdin.json
 
-# ─── Konfiguracja ───────────────────────────────────────────────
-# UWAGA: Od Claude Code 2.x limity 5h/7d są po stronie serwera.
-# Skrypt pobiera je z oficjalnego endpointu OAuth (jak Claude Code).
-# Fallback na ccusage gdy endpoint nieosiągalny.
+# ─── Configuration ────────────────────────────────────────────────
+# NOTE: Since Claude Code 2.x, 5h/7d usage limits live server-side.
+# This script pulls them from the official OAuth endpoint (same one
+# Claude Code itself uses).
 CC_USAGE_ENDPOINT="https://api.anthropic.com/api/oauth/usage"
 CC_KEYCHAIN_SERVICE="Claude Code-credentials"
 CC_USER_AGENT="claude-code/2.0.32"
 
-# ─── Kolory ──────────────────────────────────────────────────────
+# ─── Colors ────────────────────────────────────────────────────────
 R="\033[0m"
 C_SEC="\033[38;5;37m"
 C_LBL="\033[38;5;242m"
@@ -26,7 +30,6 @@ C_DIR="\033[38;5;228m"
 C_THINK="\033[38;5;183m"
 C_DIM="\033[38;5;240m"
 C_SEP="\033[38;5;240m"
-C_WEATHER="\033[38;5;117m"
 
 SEP=" ${C_SEP}│${R} "
 
@@ -72,11 +75,11 @@ print_lr() {
   printf "%b%*s%b\n" "$left" "$pad" "" "$right"
 }
 
-# ─── Dane z JSON (kontekst sesji) ────────────────────────────────
+# ─── Data from JSON (session context) ────────────────────────────
 MODEL=$(echo "$INPUT"       | jq -r '.model.display_name // "unknown"' 2>/dev/null)
 
-# Procent pozostały kontekstu — nowe Claude Code wystawia gotowe pole.
-# Fallback: licz z input+output / window_size (stary format).
+# Remaining context percentage — newer Claude Code exposes it directly.
+# Fallback: compute from input+output tokens / window size (legacy format).
 CTX_REMAIN=$(echo "$INPUT" | jq -r '.context_window.remaining_percentage // empty' 2>/dev/null)
 if [ -n "$CTX_REMAIN" ] && [ "$CTX_REMAIN" != "null" ]; then
   CTX_PCT=$(awk -v r="$CTX_REMAIN" 'BEGIN{printf "%d", 100 - r}')
@@ -92,9 +95,9 @@ fi
 [ "$CTX_PCT" -lt 0 ] && CTX_PCT=0
 [ "$CTX_PCT" -gt 100 ] && CTX_PCT=100
 
-# ─── Limity planu Pro/Max z OAuth endpoint (cache 5min) ─────────
-# Endpoint zwraca 5h i 7d utilization (jak w /status).
-# Token OAuth siedzi w Keychain jako "Claude Code-credentials".
+# ─── Pro/Max plan usage limits from the OAuth endpoint (5min cache) ─
+# Returns the same 5h/7d utilization shown by `/status`.
+# The OAuth token lives in the macOS Keychain as "Claude Code-credentials".
 get_usage_limits() {
   local cache="/tmp/.cc_usage_limits" now
   now=$(date +%s)
@@ -103,7 +106,7 @@ get_usage_limits() {
     [ "$age" -lt 300 ] && cat "$cache" && return
   fi
 
-  # Pobierz token z Keychain
+  # Read the token from Keychain
   local creds token
   creds=$(security find-generic-password -s "$CC_KEYCHAIN_SERVICE" -w 2>/dev/null)
   if [ -z "$creds" ]; then
@@ -112,7 +115,7 @@ get_usage_limits() {
   token=$(echo "$creds" | jq -r '.claudeAiOauth.accessToken // empty' 2>/dev/null)
   [ -z "$token" ] && { printf "|||||" | tee "$cache"; return; }
 
-  # Zapytaj endpoint (max 3s)
+  # Query the endpoint (3s max)
   local resp
   resp=$(curl -sf --max-time 3 "$CC_USAGE_ENDPOINT" \
     -H "Authorization: Bearer $token" \
@@ -128,7 +131,7 @@ get_usage_limits() {
   opus_util=$(echo "$resp"  | jq -r '.seven_day_opus.utilization // 0' 2>/dev/null)
   opus_reset=$(echo "$resp" | jq -r '.seven_day_opus.resets_at // empty' 2>/dev/null)
 
-  # Zamień ISO timestamps na "XhYm do resetu"
+  # Convert ISO timestamps to a "XhYm until reset" style string
   to_remaining() {
     local iso="$1" clean epoch diff h m
     [ -z "$iso" ] || [ "$iso" = "null" ] && return
@@ -152,12 +155,12 @@ get_usage_limits() {
   seven_left=$(to_remaining "$seven_reset")
   opus_left=$(to_remaining "$opus_reset")
 
-  # Zaokrąglij procenty do int
+  # Round percentages to the nearest integer
   five_util=$(awk -v v="$five_util"  'BEGIN{printf "%d", v+0.5}')
   seven_util=$(awk -v v="$seven_util" 'BEGIN{printf "%d", v+0.5}')
   opus_util=$(awk -v v="$opus_util"  'BEGIN{printf "%d", v+0.5}')
 
-  # Epoch dla resetu 5h (do burn rate predictora)
+  # Epoch of the 5h reset (used by the burn-rate predictor below)
   local five_reset_epoch=""
   if [ -n "$five_reset" ] && [ "$five_reset" != "null" ]; then
     local c="${five_reset%%.*}"; c="${c%%+*}"; c="${c%Z}"
@@ -181,35 +184,36 @@ OPUS_LEFT=$(echo "$LIMITS" | cut -d'|' -f6)
 FIVE_RESET_EPOCH=$(echo "$LIMITS" | cut -d'|' -f7)
 FIVE_PCT=${FIVE_PCT:-0}; SEVEN_PCT=${SEVEN_PCT:-0}; OPUS_PCT=${OPUS_PCT:-0}
 
-# ─── Burn rate predictor (5h) ───────────────────────────────────
-# Liczy tempo zużycia tokenów. Koloruje czas w nawiasie (FIVE_LEFT):
-# szary=luz (zmieścisz się), żółty=ciasno (<30m bufora), czerwony=zabraknie przed resetem.
-FIVE_LEFT_COL="${C_VAL}"                 # domyślnie jasny (brak predykcji)
+# ─── Burn-rate predictor (5h window) ─────────────────────────────
+# Estimates token consumption speed and colors the time-left value
+# (FIVE_LEFT): gray=comfortable margin, yellow=tight (<30m buffer),
+# red=projected to run out before the reset.
+FIVE_LEFT_COL="${C_VAL}"                 # default: bright (no prediction yet)
 if [ -n "$FIVE_RESET_EPOCH" ] && [ "$FIVE_PCT" -gt 0 ]; then
-  WIN_SEC=18000                          # 5h w sekundach
+  WIN_SEC=18000                          # 5h in seconds
   START_EPOCH=$((FIVE_RESET_EPOCH - WIN_SEC))
   NOW_EPOCH=$(date +%s)
   ELAPSED=$((NOW_EPOCH - START_EPOCH))
-  if [ "$ELAPSED" -ge 360 ]; then        # min 6 min okna — wcześniej za mała próbka
+  if [ "$ELAPSED" -ge 360 ]; then        # need at least 6 minutes of data
     TOK_LEFT=$((100 - FIVE_PCT))
     if [ "$TOK_LEFT" -gt 0 ]; then
       SEC_DEPLETE=$(( TOK_LEFT * ELAPSED / FIVE_PCT ))
       DEPLETE_EPOCH=$((NOW_EPOCH + SEC_DEPLETE))
       BUFFER=$((DEPLETE_EPOCH - FIVE_RESET_EPOCH))
       if [ "$BUFFER" -lt 0 ]; then
-        FIVE_LEFT_COL="\033[38;5;203m"   # czerwony — zabraknie przed resetem
+        FIVE_LEFT_COL="\033[38;5;203m"   # red — projected to run out early
       elif [ "$BUFFER" -lt 1800 ]; then
-        FIVE_LEFT_COL="\033[38;5;221m"   # żółty — bufor <30min
+        FIVE_LEFT_COL="\033[38;5;221m"   # yellow — buffer under 30 min
       else
-        FIVE_LEFT_COL="${C_VAL}"          # jasny szary (252) — luz
+        FIVE_LEFT_COL="${C_VAL}"          # bright gray (252) — comfortable
       fi
     else
-      FIVE_LEFT_COL="\033[38;5;203m"     # 100% zużyte → czerwony
+      FIVE_LEFT_COL="\033[38;5;203m"     # 100% used → red
     fi
   fi
 fi
 
-# ─── CPU (cache 60s, top jest wolny) ────────────────────────────
+# ─── CPU (60s cache, `top` is slow) ──────────────────────────────
 get_cpu() {
   local cache="/tmp/.cc_cpu_cache" now
   now=$(date +%s)
@@ -230,7 +234,7 @@ CPU_COL="\033[38;5;78m"
   fi
 }
 
-# ─── Dysk (cache 10min) ──────────────────────────────────────────
+# ─── Disk (10min cache) ───────────────────────────────────────────
 get_disk() {
   local cache="/tmp/.cc_disk_cache" now
   now=$(date +%s)
@@ -243,7 +247,7 @@ get_disk() {
 DISK_FREE=$(get_disk)
 DISK_COL=$(sys_color "${DISK_FREE:-999}" 20 5)
 
-# ─── RAM (cache 60s) ────────────────────────────────────────────
+# ─── RAM (60s cache) ──────────────────────────────────────────────
 get_ram() {
   local cache="/tmp/.cc_ram_cache" now
   now=$(date +%s)
@@ -262,7 +266,7 @@ get_ram() {
 }
 RAM_FREE=$(get_ram)
 
-# ─── Bateria (cache 60s) ────────────────────────────────────────
+# ─── Battery (60s cache) ──────────────────────────────────────────
 get_bat() {
   local cache="/tmp/.cc_bat_cache" now
   now=$(date +%s)
@@ -289,56 +293,20 @@ get_bat() {
 }
 BAT_SEG=$(get_bat)
 
-# ─── Pogoda (cache 10min) ───────────────────────────────────────
-get_weather() {
-  local cache="/tmp/.cc_weather" now
-  now=$(date +%s)
-  if [ -f "$cache" ]; then
-    local age=$(( now - $(stat -f %m "$cache" 2>/dev/null || echo 0) ))
-    [ "$age" -lt 600 ] && cat "$cache" && return
-  fi
-  local loc lat lon wx temp wcode icon
-  local locstr
-  locstr=$(curl -sf --max-time 3 "https://ipinfo.io/loc" 2>/dev/null)
-  lat=$(echo "$locstr" | cut -d',' -f1)
-  lon=$(echo "$locstr" | cut -d',' -f2)
-  [ -z "$lat" ] && printf "" | tee "$cache" && return
-  wx=$(curl -sf --max-time 3 \
-    "https://api.open-meteo.com/v1/forecast?latitude=${lat}&longitude=${lon}&current=temperature_2m,weathercode" \
-    2>/dev/null)
-  temp=$(echo "$wx"  | jq -r '.current.temperature_2m // empty' 2>/dev/null)
-  wcode=$(echo "$wx" | jq -r '.current.weathercode // empty'    2>/dev/null)
-  [ -z "$temp" ] && printf "" | tee "$cache" && return
-  case "$wcode" in
-    0)           icon="☀" ;;
-    1|2)         icon="⛅";;
-    3)           icon="☁" ;;
-    45|48)       icon="🌫";;
-    51|53|55)    icon="🌦";;
-    61|63|65)    icon="🌧";;
-    71|73|75|77) icon="❄" ;;
-    80|81|82)    icon="🌦";;
-    95|96|99)    icon="⛈";;
-    *)           icon="?" ;;
-  esac
-  printf "%s %.0f°C" "$icon" "$temp" | tee "$cache"
-}
-WEATHER=$(get_weather)
-
-# ─── Skrócony path ───────────────────────────────────────────────
+# ─── Shortened working directory ─────────────────────────────────
 SHORT_DIR=$(pwd | sed "s|$HOME|~|" | awk -F'/' '{
   n=NF; if(n<=3){print $0} else {
     out="~/"; for(i=2;i<n;i++) out=out substr($i,1,1) "/"; print out $NF
   }
 }')
 
-# ═══ LINIA 1: AI — kontekst + limity 5h / 7d / Opus ═════════════
+# ═══ LINE 1: AI — context usage + 5h / 7d / Opus limits ═════════
 CTX_C=$(pct_color "$CTX_PCT")
 CTX_BAR=$(dotbar "$CTX_PCT")
 L1="${C_MODEL}${MODEL}${R}"
 L1="${L1}${SEP}🧩 ${C_LBL}CTX:${R} ${CTX_BAR} ${CTX_C}${CTX_PCT}%${R}"
 
-# 5h block (aktualne okno rozliczeniowe)
+# 5h block (current billing window)
 FIVE_C=$(pct_color "$FIVE_PCT")
 FIVE_BAR=$(dotbar "$FIVE_PCT")
 L1="${L1}${SEP}💎 ${FIVE_BAR} ${FIVE_C}${FIVE_PCT}%${R}"
@@ -349,7 +317,7 @@ SEVEN_C=$(pct_color "$SEVEN_PCT")
 L1="${L1}${SEP}📆 ${C_LBL}7d:${R} ${SEVEN_C}${SEVEN_PCT}%${R}"
 [ -n "$SEVEN_LEFT" ] && L1="${L1} ${C_DIM}(${C_VAL}${SEVEN_LEFT}${C_DIM})${R}"
 
-# 7d Opus (osobny licznik na Max plan)
+# 7d Opus (separate counter on the Max plan)
 if [ "$OPUS_PCT" -gt 0 ] || [ -n "$OPUS_LEFT" ]; then
   OPUS_C=$(pct_color "$OPUS_PCT")
   L1="${L1}${SEP}🧠 ${C_LBL}Opus:${R} ${OPUS_C}${OPUS_PCT}%${R}"
@@ -358,7 +326,7 @@ fi
 
 R1=""
 
-# ═══ LINIA 2: Środowisko — katalog + system + pogoda ════════════
+# ═══ LINE 2: Environment — directory + system stats ═════════════
 L2="🕐 ${C_VAL}$(date '+%H:%M')${R}"
 L2="${L2}${SEP}📁 ${C_DIR}${SHORT_DIR}${R}"
 [ -n "$DISK_FREE" ]   && L2="${L2}${SEP}💾 ${DISK_COL}${DISK_FREE}GB${R}"
@@ -366,8 +334,5 @@ L2="${L2}${SEP}📁 ${C_DIR}${SHORT_DIR}${R}"
 [ -n "$CPU_PCT" ]      && L2="${L2}${SEP}⚙ ${CPU_COL}${CPU_PCT}%${R}"
 [ -n "$BAT_SEG" ]      && L2="${L2}${SEP}${BAT_SEG}"
 
-R2=""
-[ -n "$WEATHER" ] && R2="${C_SEP}│${R} ${C_WEATHER}${WEATHER}${R}"
-
 print_lr "$L1" "$R1"
-print_lr "$L2" "$R2"
+print_lr "$L2" ""

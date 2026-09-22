@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
-# SessionStart hook: sprawdza czy ~/.claude/statusline.sh jest aktualny z
-# https://github.com/Intuicja/ClaudeCodeStatusBar (branch main).
-# Jeśli SHA blob lokalny != SHA blob remote → pobiera nową wersję.
-# Cichy gdy aktualny. Loguje do ~/.claude/statusline-update.log.
+# SessionStart hook: checks whether ~/.claude/statusline.sh is up to date with
+# https://github.com/Intuicja/ClaudeCodeStatusBar (main branch).
+# If the local blob SHA differs from the remote one, it downloads the newer
+# version. Silent when already up to date. Logs to ~/.claude/statusline-update.log.
 #
-# Wymagania: git, curl, jq (już są używane przez statusline.sh).
-# Timeout ostry (3s na network) — nie blokuje startu sesji.
+# Requirements: git, curl, jq (already used by statusline.sh).
+# Strict network timeout (3s) — never blocks session startup.
 
 set -u
 LOCAL="$HOME/.claude/statusline.sh"
@@ -17,43 +17,43 @@ LOG="$HOME/.claude/statusline-update.log"
 
 log() { printf "[%s] %s\n" "$(date '+%Y-%m-%d %H:%M:%S')" "$*" >> "$LOG"; }
 
-# Sanity checks — bez błędów blokujących start sesji
-[ ! -f "$LOCAL" ] && { log "skip: $LOCAL nie istnieje"; exit 0; }
-command -v git  >/dev/null 2>&1 || { log "skip: brak git";  exit 0; }
-command -v curl >/dev/null 2>&1 || { log "skip: brak curl"; exit 0; }
-command -v jq   >/dev/null 2>&1 || { log "skip: brak jq";   exit 0; }
+# Sanity checks — never block session startup with an error
+[ ! -f "$LOCAL" ] && { log "skip: $LOCAL does not exist"; exit 0; }
+command -v git  >/dev/null 2>&1 || { log "skip: git not found";  exit 0; }
+command -v curl >/dev/null 2>&1 || { log "skip: curl not found"; exit 0; }
+command -v jq   >/dev/null 2>&1 || { log "skip: jq not found";   exit 0; }
 
-# Lokalny blob SHA (Git oblicza tak samo jak GitHub dla pliku)
+# Local blob SHA (git computes it the same way GitHub does for a file)
 LOCAL_SHA=$(git hash-object "$LOCAL" 2>/dev/null) || { log "skip: hash-object failed"; exit 0; }
 
-# Remote blob SHA (timeout 3s, niedostępność = cichy skip)
+# Remote blob SHA (3s timeout, treat unavailability as a silent skip)
 REMOTE_SHA=$(curl -sf --max-time 3 "$API_URL" 2>/dev/null | jq -r '.sha // empty' 2>/dev/null)
-[ -z "$REMOTE_SHA" ] && { log "skip: brak remote SHA (offline?)"; exit 0; }
+[ -z "$REMOTE_SHA" ] && { log "skip: no remote SHA (offline?)"; exit 0; }
 
-# Aktualne — nic nie rób
+# Already up to date — nothing to do
 if [ "$LOCAL_SHA" = "$REMOTE_SHA" ]; then
-  log "ok: aktualny ($LOCAL_SHA)"
+  log "ok: up to date ($LOCAL_SHA)"
   exit 0
 fi
 
-# Pobierz nową wersję do tempa, zwaliduj, podmień
+# Download the new version to a temp file, validate it, then swap it in
 TMP=$(mktemp "/tmp/statusline.sh.XXXXXX") || { log "skip: mktemp failed"; exit 0; }
 trap 'rm -f "$TMP"' EXIT
 
 if ! curl -sf --max-time 5 "$RAW_URL" -o "$TMP"; then
-  log "skip: pobieranie nieudane"
+  log "skip: download failed"
   exit 0
 fi
 
-# Walidacja: musi być niepusty + zaczynać się od shebanga
-[ ! -s "$TMP" ] && { log "skip: pobrany plik pusty"; exit 0; }
-head -1 "$TMP" | grep -q '^#!' || { log "skip: brak shebang w pobranym pliku"; exit 0; }
+# Validation: must be non-empty and start with a shebang
+[ ! -s "$TMP" ] && { log "skip: downloaded file is empty"; exit 0; }
+head -1 "$TMP" | grep -q '^#!' || { log "skip: downloaded file has no shebang"; exit 0; }
 
-# Backup poprzedniej wersji + podmiana
+# Back up the previous version, then swap it in
 BACKUP="$LOCAL.bak.$(date +%Y%m%d-%H%M%S)"
 cp "$LOCAL" "$BACKUP" && mv "$TMP" "$LOCAL" && chmod +x "$LOCAL"
 log "updated: $LOCAL_SHA -> $REMOTE_SHA (backup: $BACKUP)"
 
-# Komunikat do stdout — Claude Code SessionStart hook wstrzyknie do kontekstu
-printf "Status bar zaktualizowany do najnowszej wersji z GitHub (commit %s)\n" "${REMOTE_SHA:0:7}"
+# Message to stdout — Claude Code's SessionStart hook injects this into context
+printf "Status bar updated to the latest version from GitHub (commit %s)\n" "${REMOTE_SHA:0:7}"
 exit 0
