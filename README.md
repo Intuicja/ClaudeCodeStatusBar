@@ -36,6 +36,20 @@ Opus 4.7 │ 🧩 CTX: ▮▮▯▯▯▯▯▯▯▯ 18% │ 💎 ▮▯▯▯�
 | **⚙ CPU** | CPU load |
 | **🔋/⚡ Battery** | Charge level + power source (battery/AC) |
 
+## Bar styles
+
+The context and usage bars support 5 rendering styles, picked once during install and stored in `~/.claude/.cc_statusline_style` (separate from the script itself, so auto-updates never reset your choice):
+
+| Style | Look | Description |
+|-------|------|-------------|
+| `dots` | `▮▮▮▯▯▯▯▯▯▯` | Original look — 10 discrete blocks, 10% steps. Default. |
+| `smooth` | `███▌░░░░░░` | Continuous fill with no gaps, finer resolution. |
+| `pill` | solid block | Solid colored background block, no character texture — closest to a modern gauge widget. |
+| `braille` | `⣿⣧⠀⠀⠀⠀⠀⠀⠀⠀` | Braille dot matrix — most compact, highest density. |
+| `classic` | `[###-------]` | Plain ASCII brackets — readable even in a terminal with no color support. |
+
+Change it any time: rerun `./install.sh`, or edit `~/.claude/.cc_statusline_style` directly (it just holds the style name).
+
 ## Color coding
 
 Percentage values are colored by severity:
@@ -68,6 +82,14 @@ If the Keychain or the endpoint is unreachable, the 5h/7d sections hide themselv
 - A Claude Code session signed in to a Pro/Max plan (for the 5h/7d sections)
 
 ## Installation
+
+Run the interactive installer — it copies the script into `~/.claude`, asks which bar style you want (see below), and prints the `settings.json` snippet to add by hand:
+
+```bash
+./install.sh
+```
+
+Or install manually if you'd rather skip the prompt (defaults to the `dots` style):
 
 ```bash
 cp statusline.sh ~/.claude/statusline.sh

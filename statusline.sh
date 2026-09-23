@@ -33,6 +33,15 @@ C_SEP="\033[38;5;240m"
 
 SEP=" ${C_SEP}│${R} "
 
+# ─── Bar style (picked at install time by install.sh) ────────────
+# Stored separately from this script, in its own file, so that
+# check-statusline-update.sh can replace statusline.sh itself without
+# wiping the user's chosen style. Defaults to "dots" (the original look)
+# when no choice was ever made.
+BAR_STYLE="dots"
+STYLE_FILE="$HOME/.claude/.cc_statusline_style"
+[ -f "$STYLE_FILE" ] && BAR_STYLE=$(cat "$STYLE_FILE" 2>/dev/null)
+
 # ─── Helpers ─────────────────────────────────────────────────────
 pct_color() {
   local p=${1:-0}
@@ -40,6 +49,15 @@ pct_color() {
   elif [ "$p" -lt 75 ]; then printf "\033[38;5;221m"
   elif [ "$p" -lt 90 ]; then printf "\033[38;5;209m"
   else                        printf "\033[38;5;203m"
+  fi
+}
+
+bg_color() {
+  local p=${1:-0}
+  if   [ "$p" -lt 50 ]; then printf "\033[48;5;22m"
+  elif [ "$p" -lt 75 ]; then printf "\033[48;5;100m"
+  elif [ "$p" -lt 90 ]; then printf "\033[48;5;130m"
+  else                        printf "\033[48;5;88m"
   fi
 }
 
@@ -51,10 +69,14 @@ sys_color() {
   fi
 }
 
-dotbar() {
-  local pct=${1:-0} filled bar=""
+# ─── Bar styles ────────────────────────────────────────────────────
+# All five render the same 10-cell width so line length never changes
+# when the style changes. dotbar() below dispatches to whichever one
+# BAR_STYLE picked; every call site in this script just calls dotbar().
+
+bar_dots() {   # original look: 10 discrete blocks, 10% steps
+  local pct=${1:-0} filled bar="" color i
   filled=$(( pct * 10 / 100 ))
-  local color
   color=$(pct_color "$pct")
   for i in 1 2 3 4 5 6 7 8 9 10; do
     if [ "$i" -le "$filled" ]; then bar="${bar}${color}▮${R}"
@@ -62,6 +84,63 @@ dotbar() {
     fi
   done
   printf "%b" "$bar"
+}
+
+bar_smooth() {  # continuous fill via eighth-block characters, no gaps
+  local pct=${1:-0} width=10 color eighths full frac bar="" pad="" i
+  local chars=("" "▏" "▎" "▍" "▌" "▋" "▊" "▉" "█")
+  color=$(pct_color "$pct")
+  eighths=$(( pct * width * 8 / 100 ))
+  full=$(( eighths / 8 )); frac=$(( eighths % 8 ))
+  for ((i=0;i<full;i++)); do bar="${bar}█"; done
+  [ "$frac" -gt 0 ] && bar="${bar}${chars[$frac]}"
+  local rest=$(( width - full - (frac>0?1:0) ))
+  for ((i=0;i<rest;i++)); do pad="${pad}░"; done
+  printf "%b" "${color}${bar}${R}${C_DIM}${pad}${R}"
+}
+
+bar_pill() {   # solid background block, no character texture
+  local pct=${1:-0} width=10 filled bg_fill rest bar="" pad="" i
+  filled=$(( pct * width / 100 ))
+  bg_fill=$(bg_color "$pct")
+  for ((i=0;i<filled;i++)); do bar="${bar} "; done
+  rest=$(( width - filled ))
+  for ((i=0;i<rest;i++)); do pad="${pad} "; done
+  printf "%b" "${bg_fill}${bar}${R}\033[48;5;238m${pad}${R}"
+}
+
+bar_braille() { # braille dot matrix — most compact, highest density
+  local pct=${1:-0} width=10 color eighths full frac bar="" pad="" i
+  local chars=("⠀" "⡀" "⡄" "⡆" "⡇" "⣇" "⣧" "⣷" "⣿")
+  color=$(pct_color "$pct")
+  eighths=$(( pct * width * 8 / 100 ))
+  full=$(( eighths / 8 )); frac=$(( eighths % 8 ))
+  for ((i=0;i<full;i++)); do bar="${bar}⣿"; done
+  [ "$frac" -gt 0 ] && bar="${bar}${chars[$frac]}"
+  local rest=$(( width - full - (frac>0?1:0) ))
+  for ((i=0;i<rest;i++)); do pad="${pad}${chars[0]}"; done
+  printf "%b" "${color}${bar}${C_DIM}${pad}${R}"
+}
+
+bar_classic() { # plain ASCII brackets — readable even without color
+  local pct=${1:-0} width=10 filled color bar="" pad="" i
+  color=$(pct_color "$pct")
+  filled=$(( pct * width / 100 ))
+  for ((i=0;i<filled;i++)); do bar="${bar}#"; done
+  local rest=$(( width - filled ))
+  for ((i=0;i<rest;i++)); do pad="${pad}-"; done
+  printf "%b" "[${color}${bar}${R}${C_DIM}${pad}${R}]"
+}
+
+dotbar() {  # dispatcher — renders whichever style BAR_STYLE selected
+  local pct=${1:-0}
+  case "$BAR_STYLE" in
+    smooth)  bar_smooth "$pct" ;;
+    pill)    bar_pill "$pct" ;;
+    braille) bar_braille "$pct" ;;
+    classic) bar_classic "$pct" ;;
+    *)       bar_dots "$pct" ;;
+  esac
 }
 
 print_lr() {
