@@ -1,10 +1,10 @@
-# Claude Code Status Bar
+# Claude Code Status Bar — the Best Statusline for Claude Code Usage Limits
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 ![Shell](https://img.shields.io/badge/shell-bash-4EAA25?logo=gnubash&logoColor=white)
 ![Platform](https://img.shields.io/badge/platform-macOS-000000?logo=apple&logoColor=white)
 
-A two-line status bar for [Claude Code](https://docs.anthropic.com/en/docs/claude-code) (the Anthropic CLI) that shows what the built-in statusline doesn't: your **real Pro/Max plan usage** (5h / 7d / 7d Opus, pulled straight from Anthropic's own OAuth endpoint), a live **context window** gauge, and at-a-glance **system stats** (CPU, RAM, disk, battery) — all in a compact, color-coded, single-file bash script with zero dependencies beyond `jq` and `curl`.
+The most complete free **Claude Code statusline**: a two-line status bar that shows what the built-in one doesn't — your **real Pro/Max plan usage** (5h / 7d / 7d Opus, pulled straight from Anthropic's own OAuth endpoint, the same one `/status` uses), a live **context window** gauge, and at-a-glance **system stats** (CPU, RAM, disk, battery). One compact, color-coded, single-file bash script with zero dependencies beyond `jq` and `curl`.
 
 If you've ever wondered *"how close am I to my 5-hour limit right now"* without running `/status` by hand, this is for you.
 
